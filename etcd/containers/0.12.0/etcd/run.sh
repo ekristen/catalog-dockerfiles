@@ -2,6 +2,11 @@
 if [ "$RANCHER_DEBUG" == "true" ]; then set -x; fi
 
 META_URL="http://rancher-metadata.rancher.internal/2015-12-19"
+PROTOCOL="http"
+
+if [ "x${USE_HTTPS}" == "x" ]; then
+  PROTOCOL="https"
+fi
 
 # loop until metadata wakes up...
 STACK_NAME=$(wget -q -O - ${META_URL}/self/stack/name)
@@ -21,7 +26,7 @@ LEGACY_DATA_DIR=/data
 DATA_DIR=/pdata
 DR_FLAG=$DATA_DIR/DR
 export ETCD_DATA_DIR=$DATA_DIR/data.current
-export ETCDCTL_ENDPOINT=http://etcd.${STACK_NAME}:2379
+export ETCDCTL_ENDPOINT=$PROTOCOL://etcd.${STACK_NAME}:2379
 
 # member name should be dashed-IP (piggyback off of retain_ip functionality)
 NAME=$(echo $IP | tr '.' '-')
@@ -31,7 +36,7 @@ etcdctl_quorum() {
     for container in $(giddyup service containers); do
         primary_ip=$(wget -q -O - ${META_URL}/self/service/containers/${container}/primary_ip)
 
-        giddyup probe http://${primary_ip}:2379/health &> /dev/null
+        giddyup probe $PROTOCOL://${primary_ip}:2379/health &> /dev/null
         if [ "$?" == "0" ]; then
             target_ip=$primary_ip
             break
@@ -40,7 +45,7 @@ etcdctl_quorum() {
     if [ "$target_ip" == "0" ]; then
         echo No etcd nodes available
     else
-        etcdctl --endpoints http://${primary_ip}:2379 $@
+        etcdctl --endpoints $PROTOCOL://${primary_ip}:2379 $@
     fi
 }
 
@@ -59,7 +64,7 @@ etcdctl_one() {
     if [ "$target_ip" == "0" ]; then
         echo No etcd nodes available
     else
-        etcdctl --endpoints http://${primary_ip}:2379 $@
+        etcdctl --endpoints $PROTOCOL://${primary_ip}:2379 $@
     fi
 }
 
@@ -126,11 +131,11 @@ standalone_node() {
     rolling_backup &
     etcd \
         --name ${NAME} \
-        --listen-client-urls http://0.0.0.0:2379 \
-        --advertise-client-urls http://${IP}:2379 \
-        --listen-peer-urls http://0.0.0.0:2380 \
-        --initial-advertise-peer-urls http://${IP}:2380 \
-        --initial-cluster ${NAME}=http://${IP}:2380 \
+        --listen-client-urls $PROTOCOL://0.0.0.0:2379 \
+        --advertise-client-urls $PROTOCOL://${IP}:2379 \
+        --listen-peer-urls $PROTOCOL://0.0.0.0:2380 \
+        --initial-advertise-peer-urls $PROTOCOL://${IP}:2380 \
+        --initial-cluster ${NAME}=$PROTOCOL://${IP}:2380 \
         --initial-cluster-state new
     cleanup $?
 }
@@ -140,10 +145,10 @@ restart_node() {
     rolling_backup &
     etcd \
         --name ${NAME} \
-        --listen-client-urls http://0.0.0.0:2379 \
-        --advertise-client-urls http://${IP}:2379 \
-        --listen-peer-urls http://0.0.0.0:2380 \
-        --initial-advertise-peer-urls http://${IP}:2380 \
+        --listen-client-urls $PROTOCOL://0.0.0.0:2379 \
+        --advertise-client-urls $PROTOCOL://${IP}:2379 \
+        --listen-peer-urls $PROTOCOL://0.0.0.0:2380 \
+        --initial-advertise-peer-urls $PROTOCOL://${IP}:2380 \
         --initial-cluster-state existing
     cleanup $?
 }
@@ -164,7 +169,7 @@ runtime_node() {
         ctx_index=$(wget -q -O - ${META_URL}/self/service/containers/${container}/create_index)
         primary_ip=$(wget -q -O - ${META_URL}/self/service/containers/${container}/primary_ip)
         if [ "${ctx_index}" -lt "${CREATE_INDEX}" ]; then
-            giddyup probe http://${primary_ip}:2379/health --loop --min 1s --max 15s --backoff 1.2
+            giddyup probe $PROTOCOL://${primary_ip}:2379/health --loop --min 1s --max 15s --backoff 1.2
         fi
     done
 
@@ -184,10 +189,10 @@ runtime_node() {
         if [ "$cluster" != "" ]; then
             cluster=${cluster},
         fi
-        cluster=${cluster}${cname}=http://${cip}:2380
+        cluster=${cluster}${cname}=$PROTOCOL://${cip}:2380
     done
 
-    etcdctl_quorum member add $NAME http://${IP}:2380
+    etcdctl_quorum member add $NAME $PROTOCOL://${IP}:2380
 
     # write container IP to data directory for reference
     echo $IP > $ETCD_DATA_DIR/ip
@@ -196,10 +201,10 @@ runtime_node() {
     rolling_backup &
     etcd \
         --name ${NAME} \
-        --listen-client-urls http://0.0.0.0:2379 \
-        --advertise-client-urls http://${IP}:2379 \
-        --listen-peer-urls http://0.0.0.0:2380 \
-        --initial-advertise-peer-urls http://${IP}:2380 \
+        --listen-client-urls $PROTOCOL://0.0.0.0:2379 \
+        --advertise-client-urls $PROTOCOL://${IP}:2379 \
+        --listen-peer-urls $PROTOCOL://0.0.0.0:2380 \
+        --initial-advertise-peer-urls $PROTOCOL://${IP}:2380 \
         --initial-cluster-state existing \
         --initial-cluster $cluster
     cleanup $?
@@ -222,9 +227,9 @@ recover_node() {
         fi
         cluster=${cluster}${name}=${peer_url}
     done <<< "$(etcdctl_quorum member list | grep -v unstarted)"
-    cluster=${cluster},${NAME}=http://${IP}:2380
+    cluster=${cluster},${NAME}=$PROTOCOL://${IP}:2380
 
-    etcdctl_quorum member add $NAME http://${IP}:2380
+    etcdctl_quorum member add $NAME $PROTOCOL://${IP}:2380
 
     # write container IP to data directory for reference
     echo $IP > $ETCD_DATA_DIR/ip
@@ -233,10 +238,10 @@ recover_node() {
     rolling_backup &
     etcd \
         --name ${NAME} \
-        --listen-client-urls http://0.0.0.0:2379 \
-        --advertise-client-urls http://${IP}:2379 \
-        --listen-peer-urls http://0.0.0.0:2380 \
-        --initial-advertise-peer-urls http://${IP}:2380 \
+        --listen-client-urls $PROTOCOL://0.0.0.0:2379 \
+        --advertise-client-urls $PROTOCOL://${IP}:2379 \
+        --listen-peer-urls $PROTOCOL://0.0.0.0:2380 \
+        --initial-advertise-peer-urls $PROTOCOL://${IP}:2380 \
         --initial-cluster-state existing \
         --initial-cluster $cluster
     cleanup $?
@@ -258,21 +263,21 @@ disaster_node() {
     PID=$!
 
     # wait until etcd reports healthy
-    giddyup probe http://127.0.0.1:2379/health --loop --min 1s --max 15s --backoff 1.2
+    giddyup probe $PROTOCOL://127.0.0.1:2379/health --loop --min 1s --max 15s --backoff 1.2
 
     # Disaster recovery ignores peer-urls flag, so we update it
 
     # query etcd for its old member ID
     while [ "$oldnode" == "" ]; do
-        oldnode=$(etcdctl --endpoints=http://127.0.0.1:2379 member list | grep "$NAME" | tr ':' '\n' | head -1)
+        oldnode=$(etcdctl --endpoints=$PROTOCOL://127.0.0.1:2379 member list | grep "$NAME" | tr ':' '\n' | head -1)
         sleep 1
     done
     
     # etcd says it is healthy, but writes fail for a while...so keep trying until it works
-    etcdctl --endpoints=http://127.0.0.1:2379 member update $oldnode http://${IP}:2380
+    etcdctl --endpoints=$PROTOCOL://127.0.0.1:2379 member update $oldnode $PROTOCOL://${IP}:2380
     while [ "$?" != "0" ]; do
         sleep 1
-        etcdctl --endpoints=http://127.0.0.1:2379 member update $oldnode http://${IP}:2380
+        etcdctl --endpoints=$PROTOCOL://127.0.0.1:2379 member update $oldnode $PROTOCOL://${IP}:2380
     done
 
     # shutdown the node cleanly
